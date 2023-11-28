@@ -5,7 +5,10 @@ use halo2_proofs::halo2curves::bn256::Fr;
 use halo2_proofs::plonk::Fixed;
 use halo2_proofs::{arithmetic::FieldExt, circuit::AssignedCell};
 use log;
+use slice_group_by::BinaryGroupBy;
 use std::time::Instant;
+
+mod group_by;
 
 mod chip_long {
     use super::{SpongeChip, SpongeConfig};
@@ -895,21 +898,21 @@ where
                 .zip(domains_i.zip(checks_i))
                 .collect();
 
+            let f = |((_, control), _): &((_, Option<&u64>), _), _: &_| -> bool {
+                chunk_len += 1;
+                if control.copied().unwrap_or(0) > STEP as u64 || chunk_len < min_len {
+                    true
+                } else {
+                    chunk_len = 0;
+                    false
+                }
+            };
             // Split `data` into chunks and ensure each chunks is longer thant `min_len` and ends
             // with a new sponge.
             //
             // Each chunk would be processed in a separate thread.
-            let assignments = data
-                .group_by(|((_, control), _), _| {
-                    chunk_len += 1;
-                    if control.copied().unwrap_or(0) > STEP as u64 || chunk_len < min_len {
-                        true
-                    } else {
-                        chunk_len = 0;
-                        false
-                    }
-                })
-                .collect::<Vec<_>>();
+
+            let assignments = group_by::group_by(data.as_slice(), f).collect::<Vec<_>>();
             let assignments_len = assignments.len();
             let assignments = assignments
                 .into_iter()
@@ -920,7 +923,7 @@ where
                     move |mut region: Region<'_, F>| -> Result<PermutedStatePair<PC::Word>, Error> {
                         self.fill_hash_tbl_body_partial(
                             &mut region,
-                            data,
+                            &data,
                             &mut is_first_pass,
                             is_last_sub_region,
                         )
@@ -992,6 +995,10 @@ where
     fn loaded(&self) -> &Self::Loaded {
         self.data
     }
+}
+
+fn stable_group_by<'a, T: 'a, P>(slice: &'a [T], predicate: P) -> BinaryGroupBy<'a, T, P> {
+    BinaryGroupBy::new(slice, predicate)
 }
 
 #[cfg(test)]
